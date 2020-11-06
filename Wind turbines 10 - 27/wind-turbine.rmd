@@ -1,0 +1,169 @@
+---
+title: "TidyTuesday - Canadian wind turbines"
+author: "envy"
+date: "11/5/2020"
+output: pdf_document
+---
+
+
+## Explore the data 
+
+```{r libraries}
+library(knitr)
+library(tidyverse)
+library(parttree)
+library(rpart)
+```
+
+
+```{r}
+turbines <- read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-10-27/wind-turbine.csv')
+```
+
+
+```{r}
+turbines %>% count(commissioning_date, sort = TRUE)
+```
+
+
+```{r}
+t_df <-turbines %>%
+  transmute(turbines_capasity = turbine_rated_capacity_k_w,
+            rotor_diameter_m,
+            hub_height_m, 
+            commissioning_date = parse_number(commissioning_date), 
+            province_territory = fct_lump(province_territory, 8), 
+            model = fct_lump(model, 10)) %>% 
+  filter(!is.na(turbines_capasity)) %>% 
+  mutate_if(is.character, factor)
+```
+
+```{r}
+t_df %>% select(turbines_capasity:commissioning_date) %>% 
+  pivot_longer(rotor_diameter_m:commissioning_date) %>% 
+  ggplot(aes(x = turbines_capasity, y = value)) + 
+  geom_hex(bins = 15, alpha =.8) + 
+  geom_smooth(method = "lm") + 
+  facet_wrap(~name, scales = "free_y") + 
+  scale_fill_gradient(high = "cyan3")
+```
+
+
+## Build a model
+
+```{r}
+library(tidymodels)
+```
+
+```{r}
+set.seed(123)
+# data is split by quantiels by the conitniious vairables
+wind_split <- initial_split(t_df, strata = turbines_capasity)
+wind_train <- training(wind_split)
+wind_test <- testing(wind_split)
+
+
+set.seed(234)
+wind_folds <-  vfold_cv(wind_train, strata = turbines_capasity)
+wind_folds %>% head()
+```
+
+
+```{r}
+# specification mdodels
+# Tree we'er going to model
+tree_spec <- decision_tree(
+  cost_complexity = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+) %>% 
+  set_engine("rpart") %>% 
+  set_mode("regression")
+```
+
+### regular grid
+
+```{r}
+# set of parameters for the given model
+tree_grid <- grid_regular(cost_complexity(), tree_depth(), min_n(), 
+                          levels = 4)
+```
+
+```{r}
+doParallel::registerDoParallel()
+set.seed(345)
+
+
+tree_rs <- tune_grid(
+  tree_spec,
+  turbines_capasity ~.,
+  resamples = wind_folds,
+  grid  = tree_grid,
+  metrics =  metric_set(rmse, rsq, mae, mape)
+)  
+```
+
+## Explore results
+
+```{r}
+collect_metrics(tree_rs)
+
+autoplot(tree_rs) + theme_gray()
+```
+```{r}
+show_best(tree_rs, "mape")
+
+
+```
+
+
+```{r}
+final_tree <- finalize_model(tree_spec,select_best(tree_rs, "rmse"))
+```
+
+
+### Fitting 
+```{r}
+final_fit <- fit(final_tree, turbines_capasity ~., wind_train)
+final_rs  <- last_fit(final_tree, turbines_capasity~., wind_split)
+
+```
+
+
+## Predicting on new data
+```{r}
+predict(final_fit, wind_train[44,])
+# predict(final_rs$.workflow[[1]], wind_train[144,])
+```
+
+
+## Visualize
+
+```{r}
+library(vip)
+
+final_fit %>% 
+  vip(geom = "col", aesthetics = list(fill = "midnightblue", alpha = 0.8))
+```
+
+```{r}
+
+example_fit <- fit(final_tree, turbines_capasity ~ rotor_diameter_m + commissioning_date, wind_train) 
+
+wind_train %>% 
+  ggplot(aes(rotor_diameter_m, commissioning_date)) + 
+  geom_parttree(data = example_fit, aes(fill = turbines_capasity), alpha = 0.3) + 
+  geom_jitter(alpha = 0.7, width  = 1, height = 0.5, aes(color  = turbines_capasity)) + 
+  scale_colour_viridis_c(aesthetics = c("color", "fill"))
+```
+
+```{r}
+collect_metrics(final_rs)
+
+collect_predictions(final_rs) %>% 
+  ggplot(aes(turbines_capasity, .pred)) + # True on X axis, predicted on Y axis
+  geom_abline(slope = 1, lty = 2, color = "gray50", alpha = 0.5) + 
+  geom_point(alpha = 0.6, color = "midnightblue")
+```
+
+
