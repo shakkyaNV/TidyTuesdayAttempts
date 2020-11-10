@@ -2,7 +2,7 @@
 title: "TidyTuesday - Canadian wind turbines"
 author: "envy"
 date: "11/5/2020"
-output: pdf_document
+output: github_document
 ---
 
 
