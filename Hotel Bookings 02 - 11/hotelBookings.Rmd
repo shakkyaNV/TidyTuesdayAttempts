@@ -1,0 +1,269 @@
+---
+title: "Hotel Booking - tidymodels and recipe"
+author: "eNVy"
+date: '`r Sys.Date()`'
+output: github_document
+---
+
+```{r setup, messages = FALSE, warning = FALSE, echo = FALSE}
+library(knitr)
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.height = 5,
+	fig.width = 8,
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE,
+	dpi = 180
+)
+library(tidyverse)
+library(tidymodels)
+library(recipes)
+library(silgelib)
+theme_set(theme_plex())
+```
+
+Let's build a model using recipes for [hotel bookings from February 11th #tidytuesday #rstats data](https://github.com/shakkyaNV/tidytuesday/tree/master/data/2020/2020-02-11/readme.md)  
+
+## Explore the Data
+
+```{r, messages = FALSE, warning=FALSE}
+hotels <- readr::read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-02-11/hotels.csv")
+
+hotels %>% count(is_canceled)
+```
+
+The data is very interesting and the distributions of the data is highly different based on if the reservation is canceled or not.  
+Hence we will simply the question to form a model for people who did not cancel their reservation. 
+
+```{r}
+set.seed(124)
+hotels %>% select(children, babies) %>% sample_n(10)
+```
+
+We will build a predictive model to predict if the people stayed, stayed with children or not. But the data is highly imbalanced based on ```children``` variable as you can see by the following tibble. 
+
+```{r}
+hotels %>% drop_na() %>% count(children != 0 )
+```
+
+```{r}
+hotel_stays <- hotels %>% 
+  filter(is_canceled == 0) %>% 
+  mutate(children = case_when(children + babies > 0 ~ "children", 
+         TRUE ~ "None"),
+         required_car_parking_spaces = case_when(required_car_parking_spaces > 0 ~ "Parking", TRUE ~ "None")) %>% 
+  select(-is_canceled, -reservation_status, -babies)
+
+hotel_stays %>%
+  count(children)
+  
+```
+
+```{r}
+library(skimr)
+skim(hotel_stays)
+```
+As we can see there are too many unique items for variables such as ```agent, company```. We may want to lump them together to get a better result.  
+And most of the data e.g. ```adr, adults``` data are highly skewed and their distribution is highly long tailed. Hence, the data requires heavy pre-processing and some feature engineering as well. 
+
+### Exploratory Plots
+
+```{r}
+hotel_stays %>% 
+  mutate(arrival_date_month  = factor(arrival_date_month, levels = month.name)) %>% 
+           count(arrival_date_month, children) %>%
+  group_by(children) %>% 
+  mutate(proportion = n/ sum(n)) %>%
+  ggplot(aes(x = arrival_date_month, y = proportion, fill = children)) + 
+  geom_col(position = "dodge") + 
+  scale_y_continuous(labels = scales::percent_format())
+```
+
+
+```{r}
+hotel_stays %>%
+  count(hotel)
+```
+
+
+Let's see if the distribution of each hotel is different
+
+```{r}
+hotel_stays %>% 
+  mutate(arrival_date_month  = factor(arrival_date_month, levels = month.name)) %>% 
+           count(hotel, arrival_date_month, children) %>%
+  group_by(hotel, children) %>% 
+  mutate(proportion = n/ sum(n)) %>% 
+  ggplot(aes(x = arrival_date_month , y = proportion, fill = children)) + 
+  geom_col(position = "dodge") + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  facet_wrap(~hotel, nrow = 2) + 
+  theme(axis.text.x = element_text(angle = 45, hjust= 1))
+```
+
+```{r}
+hotel_stays %>% 
+           count(hotel, required_car_parking_spaces, children) %>%
+  group_by(hotel, children) %>% 
+  mutate(proportion = n/ sum(n)) %>% 
+  ggplot(aes(x = required_car_parking_spaces , y = proportion, fill = children)) + 
+  geom_col(position = "dodge") + 
+  scale_y_continuous(labels = scales::percent_format()) + 
+  facet_wrap(~hotel, nrow = 2)
+```
+
+People who asked for parking are more likely to have children and converse is true for people without children. 
+
+
+```{r}
+library(GGally)
+
+hotel_stays %>% 
+  select(children, adr, required_car_parking_spaces, 
+         total_of_special_requests) %>% 
+  ggpairs(mapping = aes(color = children))
+```
+
+## Build a model with recipes and tidymodels
+
+```{r}
+hotel_df <- hotel_stays %>% 
+  select(children, hotel, arrival_date_month,
+         meal, adr, adults, 
+         required_car_parking_spaces, total_of_special_requests,
+         stays_in_week_nights, stays_in_weekend_nights) %>% 
+  mutate_if(is.character, factor) %>%  
+  glimpse(width = 80)
+```
+
+```{r}
+set.seed(1234)
+
+split <- initial_split(hotel_df)
+hotel_train <-  training(split)
+hotel_test  <-  testing(split)
+
+
+# build a recipe (same as pipe in py)
+
+hotel_recipe <- hotel_train %>% recipe(children ~.) %>% # we're predicting children variable using all other data
+  step_downsample(children) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%  # one hot encoding, but not for the outcome 
+  step_nzv(all_numeric()) %>% # remove any variables with zero variance
+  step_normalize(all_numeric()) %>% 
+  prep()  # w/o prep we will only do collect the necessary steps 
+# but prep() actually goes to our data and no the said steps to the data
+
+hotel_recipe 
+
+juice(hotel_recipe) # to get the processed training data out of the recipe 
+# can do the same process via (bake(new_data = hotel_train), but the down sample won't work)
+```
+
+
+```{r}
+test_processed <- bake(hotel_recipe, new_data = hotel_test) %>% 
+  glimpse(width = 80)
+# to avoid data leakage we pipe the testing data
+# through the same recipe
+```
+## Build models 
+
+```{r}
+knn_spec <- nearest_neighbor() %>% 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+knn_fit <- knn_spec %>%
+  fit(children ~., 
+      data = juice(hotel_recipe))
+knn_fit
+```
+
+
+
+```{r}
+tree_spec <- decision_tree() %>% 
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+tree_fit <- tree_spec %>% 
+  fit(children ~. ,
+      data = juice(hotel_recipe))
+
+tree_fit # information of the decision (nodes/ leafs/ and stem)
+```
+
+## Evaluate Our Model
+
+```{r}
+set.seed(345)
+
+val_splits <- mc_cv(juice(hotel_recipe), prop = 0.9 , strata = children)
+val_splits
+```
+### K Nearest Neighbor Results and Evaluations
+
+
+```{r}
+knn_res <- fit_resamples( children ~. , 
+               knn_spec, 
+               val_splits, 
+               control = control_resamples(save_pred =  TRUE)
+) 
+
+knn_res %>% 
+  collect_metrics()
+
+```
+
+The model is fit on 8.3K data and is evaluated on 916 examples. But here ```fit_resample``` is not doing any tuning, its' just evaluating on the said model. 
+
+### Decision Tree Results and Evaluations
+
+```{r}
+tree_res <- fit_resamples( 
+               children ~. , 
+               tree_spec, 
+               val_splits, 
+               control = control_resamples(save_pred =  TRUE)
+) 
+
+tree_res %>% 
+  collect_metrics()
+```
+### Predictions of the KNN model
+
+```{r}
+knn_res %>% 
+  unnest(.predictions) %>% 
+  mutate(model = "knn")  %>% 
+  bind_rows(tree_res %>% 
+              unnest(.predictions) %>% 
+              mutate(model = "rpart")) %>% 
+  group_by(model) %>% 
+  roc_curve (children, .pred_children) %>% 
+  autoplot()
+
+
+knn_res %>% 
+  unnest(.predictions) %>% 
+  conf_mat(children, .pred_class) %>%
+  autoplot()
+```
+
+### KNN Predictions
+
+```{r}
+knn_fit %>% 
+  predict(new_data = test_processed, 
+          type = "prob") %>% 
+  mutate(truth = hotel_test$children) %>% 
+  roc_auc(truth, .pred_children)
+```
+
+
+
+
+
+
