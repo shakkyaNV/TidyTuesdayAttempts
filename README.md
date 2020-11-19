@@ -12,3 +12,7 @@ Current attemps are
     + Data processing with tidymodels and recipes 
     + KNN and Decision Tree Model
     + Metrics Visualizations
+  + Shiny webapp
+    + Use of ```shiny dashboard``` package
+    + Interactions
+    + Basic UI render and dev with shiny
