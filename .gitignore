@@ -4,8 +4,6 @@
 
 # Session Data files
 .RData
-.txt
-.pdf
 
 # User-specific files
 .Ruserdata
@@ -39,3 +37,6 @@ vignettes/*.pdf
 
 # R Environment Variables
 .Renviron
+
+# Added by envy
+*.pdf
