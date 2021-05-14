@@ -1,0 +1,227 @@
+---
+title: "PCA Analysis of Hip Hop Songs"
+author: "eNVy"
+date: '`r Sys.Date()`'
+output: github_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F)
+
+library(tidyverse)
+library(tidymodels)
+library(spotifyr)
+library(corrr)
+```
+
+Building a model using *tidyverse* and *tidymodels* with the use of Principal Component Analysis (PCA). Main goals are to understand the 
+
++ Song characteristics
++ Critic Scores associated with the songs
+
+***************
+The procedure will use; 
+
++ little bit of purrr
++ little bit of spotifyr
++ Major pre-processing
++ Major data handling
++ mild recipes
+
+***************
+
+## Explore the Data 
+
+```{r}
+# We'll be only using rankings data set.
+rankings <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-04-14/rankings.csv") 
+
+rankings %>% glimpse()
+```
+
+```{r}
+rankings %>% ggplot(mapping = aes(year, points , color = gender)) + 
+  geom_jitter( alpha = 0.5, ) + 
+  scale_y_log10() + 
+  theme_classic()
+```
+Notice the linear distribution of data between 1 ~ 20 of points. 
+
+```{r}
+# after obtainig the spotify access tokens from whatever developer account
+# we can pull audio features from a created playlist
+id <- '3bfec784c0c547ba8faf7e3af769277e'
+secret <-  'b25faee713f84d03b56e09d0bc1bb5fd'
+access_tokens <- get_spotify_access_token(client_id = id,client_secret = secret)
+playlist <-  get_playlist_audio_features("tmock1923", "7esD007S7kzeSwVtcH9GFe", authorization = access_tokens)
+
+playlist %>% head()
+```
+```{r}
+playlist %>% count(time_signature) 
+playlist %>% 
+  filter(time_signature == 3) %>% 
+  pull(track.name)
+```
+
+```{r}
+pull_id <- function(query) {
+  search_spotify(query, authorization = access_tokens, "track") %>% 
+    arrange(-popularity) %>% 
+    filter(row_number() == 1) %>%
+    pull(id)
+}
+
+
+rankings %>% head(3) %>% 
+  mutate(sQuery = paste(title, artist), 
+         sQuery = str_to_lower(sQuery)) %>% 
+  mutate(id =  map_chr(sQuery, pull_id))  %>% select(title, artist, id)
+
+# the function fails when it pulls head(4)
+# we can use possibly within purrr to identify where it goes wrong. 
+
+rankings %>% head(5) %>% 
+  mutate(sQuery = paste(title, artist), 
+         sQuery = str_to_lower(sQuery)) %>% 
+  mutate(id =  map_chr(sQuery, possibly(pull_id, NA_character_)))  %>% select(title, artist, id)
+
+# it fails when searching the artist with ft. with some other artists
+# so we'll remove everything after "ft." and then search
+
+rankingID <- rankings %>%  
+  mutate(sQuery = paste(title, artist), 
+         sQuery = str_to_lower(sQuery), 
+         sQuery = str_remove(sQuery, "ft.*$")) %>% 
+  mutate(id =  map_chr(sQuery, possibly(pull_id, NA_character_)))
+```
+
+For `r scales::percent(mean(is.na(rankingID$id)))` percent of songs we can't find an spotify id. But that fine
+
+
+```{r}
+rankingFeatures <- rankingID %>% 
+  mutate(idGroup  = row_number() %/% 80) %>% 
+  select(idGroup, id) %>% 
+  nest(data = c(id)) %>% 
+  mutate(audioFeatures = map(data, ~get_track_audio_features(.$id, authorization = access_tokens)))
+```
+
+
+```{r}
+rankingDF <- rankingID %>% 
+  bind_cols(rankingFeatures %>% 
+              select(audioFeatures) %>% 
+              unnest(audioFeatures)) %>% 
+  select(title, artist, points, year, danceability:tempo) %>% 
+  na.omit()
+
+rankingDF %>% head()
+```
+
+
+```{r}
+rankingDF %>% 
+  select(year:tempo) %>% 
+  correlate() %>% 
+  rearrange() %>% 
+  shave() %>% 
+  rplot() + silgelib::theme_plex()
+```
+
+
+```{r}
+rankingLM <- rankingDF %>% 
+  select(-title, -artist) %>% 
+  lm(log(points) ~. ,data = .)
+
+summary(rankingLM)
+```
+
+## Principal Component analysis
+
+```{r}
+hiphop_recipe <- recipe(points ~ . , data = rankingDF) %>% 
+  update_role(title, artist, new_role = "id") %>% 
+  step_log(points) %>% 
+  step_normalize(all_predictors()) %>% 
+  step_pca(all_predictors()) 
+
+hiphop_rec_prep <- prep(hiphop_recipe)
+
+```
+
+### Explore the results of PCA
+
+```{r}
+tidy_pca <- yardstick::tidy(hiphop_rec_prep, 3)
+
+
+tidy_pca %>% 
+  mutate(component = fct_inorder(component)) %>% 
+  ggplot(aes(x = value, y = terms, fill = terms)) + 
+  geom_col(show.legend = FALSE) + 
+  facet_wrap(~component) + 
+  labs(y = NULL)
+  
+  
+```
+
+```{r}
+tidy_pca %>% 
+  filter(component %in% c("PC1", "PC2" , "PC3", "PC4")) %>% 
+  group_by(component) %>% 
+  top_n(6, abs(value)) %>% 
+  ungroup() %>% 
+  mutate(
+    terms = tidytext::reorder_within(terms, abs(value), component)
+  ) %>% 
+  ggplot(aes(x = abs(value), y = terms, fill = value > 0)) + 
+  geom_col() + 
+  labs(x = "Absolute contribution to song popularity", y = NULL, fill = "Positive Contribution?") + 
+  facet_wrap(~component, scales = "free_y") + 
+  tidytext::scale_y_reordered()
+  
+```
+
+```{r}
+# fonts issue, might get stuck here. if so. load fonts loadfonts(win) or something
+juice(hiphop_rec_prep) %>% 
+  ggplot(aes(PC1, PC2, label = title))  + 
+  geom_point(alpha = 0.2) + 
+  geom_text(check_overlap = T, family = "Calibri Light")
+```
+
+```{r}
+sdev = hiphop_rec_prep$steps[[3]]$res$sdev
+
+percent_var = sdev ^ 2 / sum(sdev^2)
+
+tibble(component = unique(tidy_pca$component), 
+       percent_var = percent_var) %>% 
+  mutate(
+    component = fct_inorder(component)
+  ) %>% 
+  ggplot(aes(component, percent_var)) + 
+  geom_col(show.legend = F, fill = "indianred4") + 
+  scale_y_continuous(labels = scales::percent_format())
+
+```
+
+
+```{r}
+pca_lm <- juice(hiphop_rec_prep) %>% 
+  select(-title, -artist) %>% 
+  lm(points ~., data = .)
+
+summary(pca_lm)
+```
+
+
+## Conclusion 
+
+**The model is LAAAMMMEEEE**
+
+********
+
