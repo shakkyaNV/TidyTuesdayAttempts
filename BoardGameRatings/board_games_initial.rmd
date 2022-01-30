@@ -39,10 +39,10 @@ df_joined %>%
 ```
 ```{r}
 df_joined %>% 
+  filter(!is.na(minage)) %>% 
   mutate(
     minage = cut_number(minage, 4)
   ) %>% 
-  filter(!is.na(minage)) %>% 
   ggplot(aes(minage, average, fill = minage)) + 
   geom_boxplot(alpha = 0.2, show.legend = F)
 ```
@@ -88,7 +88,7 @@ split_gameboardcategory <- function(x){
     map(str_remove_all, "[:punct:]") %>% 
     map(str_squish) %>% 
     map(str_to_lower) %>% 
-    map(str_replace_all, "[:space:]", "_")
+    map(str_replace_all, " ", "_")
 }
 
 game_train %>% 
@@ -101,7 +101,7 @@ game_train %>%
 # evaluate recip.. Just to look see
 game_recipe %>% 
   prep() %>% 
-  bake(new_data = NULL)
+  bake(new_data = NULL) %>% str()
 ```
 
 
@@ -111,7 +111,7 @@ boost_tree(
   trees = tune(), 
   mtry = tune(), 
   min_n = tune(), 
-  learn_rate = 0.001
+  learn_rate = 0.01
 ) %>% 
   set_engine("xgboost") %>% 
   set_mode("regression") -> game_xgb_spec
@@ -137,7 +137,7 @@ tune_race_anova(
 
 
 
-
+<!-- check finetune/ dials version -->
 
 
 
