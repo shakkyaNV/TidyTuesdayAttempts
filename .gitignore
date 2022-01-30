@@ -41,3 +41,4 @@ vignettes/*.pdf
 # Added by envy
 *.pdf
 *.txt
+*.csv
