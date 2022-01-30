@@ -1,0 +1,148 @@
+---
+title: "BoardGamesRatings"
+author: "Shakkya Ranasinghe"
+date: "1/30/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache.lazy = T, message = F)
+library(tidyverse)
+here::i_am("BoardGameRatings/board_games_initial.rmd")
+```
+
+
+## Introduction
+
+```{r}
+details <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-25/details.csv")
+ratings <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2022/2022-01-25/ratings.csv")
+
+ratings %>% head()
+details %>% head()
+```
+
+
+```{r}
+df_joined <- ratings %>% 
+  left_join(details, by = "id")
+```
+
+
+## Explarotary Data Analysis
+
+
+```{r}
+df_joined %>% 
+  ggplot(aes(average)) + 
+  geom_histogram()
+```
+```{r}
+df_joined %>% 
+  mutate(
+    minage = cut_number(minage, 4)
+  ) %>% 
+  filter(!is.na(minage)) %>% 
+  ggplot(aes(minage, average, fill = minage)) + 
+  geom_boxplot(alpha = 0.2, show.legend = F)
+```
+
+
+## Modelling
+
+### XGBoost 
+
+```{r}
+library(tidymodels)
+
+df_joined %>% head()
+```
+
+```{r}
+
+set.seed(123)
+df_joined %>% 
+  select(name, average, matches("min|max"), boardgamecategory) %>% 
+  na.omit() %>% 
+  initial_split(strata = average) -> game_split
+
+game_train = training(game_split)
+game_test = testing(game_split)
+
+
+set.seed(234)
+game_folds <- vfold_cv(game_train, strata = average)
+game_folds
+```
+
+
+
+### Preprocessing
+
+```{r}
+library(textrecipes)
+
+split_gameboardcategory <- function(x){
+  x %>% 
+    str_split(", ") %>% 
+    map(str_remove_all, "[:punct:]") %>% 
+    map(str_squish) %>% 
+    map(str_to_lower) %>% 
+    map(str_replace_all, "[:space:]", "_")
+}
+
+game_train %>% 
+  recipe(average~., data = .)  %>% 
+  update_role(name, new_role = "id") %>% 
+  step_tokenize(boardgamecategory, custom_token = split_gameboardcategory) %>%  # using customized tokenizer to get the maximum info from boardgames category (since data is messy)
+  step_tokenfilter(boardgamecategory, max_tokens = 30) %>% 
+  step_tf(boardgamecategory) -> game_recipe
+
+# evaluate recip.. Just to look see
+game_recipe %>% 
+  prep() %>% 
+  bake(new_data = NULL)
+```
+
+
+
+```{r}
+boost_tree(
+  trees = tune(), 
+  mtry = tune(), 
+  min_n = tune(), 
+  learn_rate = 0.001
+) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("regression") -> game_xgb_spec
+
+workflow(game_recipe, game_xgb_spec) -> game_xgb_wf
+game_xgb_wf
+```
+
+
+```{r}
+library(finetune)
+
+doParallel::registerDoParallel()
+set.seed(234)
+
+tune_race_anova(
+  game_xgb_wf, 
+  game_folds, 
+  grid = 20, 
+  control = control_race(verbose_elim = TRUE)
+) -> game_xgb_rs
+```
+
+
+
+
+
+
+
+
+
+
+
+
