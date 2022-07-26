@@ -11,7 +11,7 @@ output: github_document
 ```{r libraries}
 library(knitr)
 library(tidyverse)
-library(parttree)
+# library(parttree)
 library(rpart)
 ```
 
